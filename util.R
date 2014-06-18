@@ -29,10 +29,11 @@ util.anovaBriefPrint <- function (briefResults) {
 
 
 util.anovaToString <- function (anova_results) {
+  numDecimals <- 2
   DFn <- anova_results$ANOVA$DFn
   DFd <- anova_results$ANOVA$DFd
-  F <- round(anova_results$ANOVA$F, 3)
-  ges <- round(anova_results$ANOVA$ges, 3)
+  F <- round(anova_results$ANOVA$F, numDecimals)
+  ges <- round(anova_results$ANOVA$ges, numDecimals)
   output <- ""
 
   # determine the p value
@@ -42,22 +43,26 @@ util.anovaToString <- function (anova_results) {
   # check for sphericity violation
   if (mauchly$p<.05) {
     output <- paste0("Mauchly's test showed assumption of sphericity was violated: W(",
-                     anova_results$ANOVA$DFn, ") = ", round(mauchly$W, 3), ", ",
+                     anova_results$ANOVA$DFn, ") = ", round(mauchly$W, numDecimals), ", ",
                      util.pToString(mauchly$p), "\n")
 
     # check if we use Greenhouse-Geisser (epsilon < .75) or Huynh-Feldt correction
     if (sphericity$GGe < 0.75) {
       output <- paste0(output, "Using Greenhouse-Geisser correction.\n")
       p <- sphericity$`p[GG]`
+      DFn <- DFn * sphericity$GGe
+      DFd <- DFd * sphericity$GGe
     } else {
       output <- paste0(output, "Using Huynh-Feldt correction.\n")
       p <- sphericity$`p[HF]`
+      DFn <- DFn * sphericity$HFe
+      DFd <- DFd * sphericity$HFe
     }
   } else { # sphericity not violated, do not change p
     p <- anova_results$ANOVA$p
   }
 
-  output <- paste0(output, "F(", DFn, ", ", DFd, ") = ", F, ", ", util.pToString(p), ", ges = ", ges)
+  output <- paste0(output, "F(", round(DFn, numDecimals), ", ", round(DFd, numDecimals), ") = ", F, ", ", util.pToString(p), ", ges = ", ges)
   return(output)
 }
 
@@ -121,14 +126,16 @@ util.withinSubjectsNonParametricAnalysis <- function (data, columns, participant
 
   # summary stats
   util.printHeader("Summary Statistics")
-  summary_results <- list(modes=apply(subset_data[2:length(subset_data)], 2, util.mode), summary=summary(subset_data[2:length(subset_data)]))
+  descriptive <- list(modes=apply(subset_data[2:length(subset_data)], 2, util.mode), 
+                          summary=summary(subset_data[2:length(subset_data)]))
 
   writeLines("Modes")
-  print(summary_results$modes)
+  print(descriptive$modes)
   writeLines("")
-  print(summary_results$summary)
+  print(descriptive$summary)
 
-  results_summary$modes = summary_results$modes
+  results_summary$modes <- descriptive$modes
+  results_summary$medians <- apply(subset_data[2:length(subset_data)], 2, median)
 
   # non-parametric anova equivalent: Friedman test
   util.printHeader("Friedman Rank Sum Test Results")
@@ -147,10 +154,12 @@ util.withinSubjectsNonParametricAnalysis <- function (data, columns, participant
     util.printHeader("Post-hoc Test Results (Pairwise Wilcoxon Test with Holm correction)")
     posthoc_results <- util.pairwise.wilcoxonSignedRankTest(stacked_data[[dvName]], stacked_data[[ivName]], p.adjust.method="holm")
     print(posthoc_results)
-    results_summary$posthoc <- posthoc_results$p.value
+    writeLines("Effect sizes (r)")
+    print(posthoc_results$r)
+    results_summary$posthoc <- list(p.value=posthoc_results$p.value, r=posthoc_results$r)
   }
 
-  return(list(brief=results_summary, data=subset_data, stacked_data=stacked_data, summary=summary_results, friedman=friedman_results, posthoc=posthoc_results))
+  return(list(brief=results_summary, data=subset_data, stacked_data=stacked_data, descriptive=descriptive, friedman=friedman_results, posthoc=posthoc_results))
 }
 
 
@@ -159,48 +168,58 @@ util.withinSubjectsNonParametricAnalysis <- function (data, columns, participant
 # Provides effect size (r) and the W and Z statistics.
 util.wilcoxonSignedRankTest <- function (x, y) {
   DNAME <- paste(deparse(substitute(x)), "and", deparse(substitute(y)))
-
-  # get the W statistic using wilcox.test. exact = F since we expect
-  # ties (two participants in same set with same value) and
+  
+  # get the W statistic using wilcox.test. exact = F since we expect 
+  # ties (two participants in same set with same value) and 
   # zeroes (one participant in x and y having the same value in both sets)
   W <- as.numeric(wilcox.test(x, y, paired = T, exact = F)$statistic)
   names(W) <- "W"
-
+  
   # compute exact p value and get Z value using wilcoxsign_test from coin package
   results <- wilcoxsign_test(x ~ y, distribution="exact", zero.method="Pratt")
   p <- pvalue(results)
-
+  
   Z <- as.numeric(statistic(results))
   names(Z) <- "Z"
-
+  
   N <- 2*length(x)
   names(N) <- "N"
-
+  
   r <- Z/sqrt(N) # effect size: 0.1 small, 0.3 medium, 0.5 large
   names(r) <- "r"
-
+  
   # use htest to make it pretty
   ans <- list(statistic=c(W, Z), parameter=c(N, r), p.value=p, method="Wilcoxon Signed Rank Test with effect size (r)", data.name=DNAME)
   class(ans) <- "htest"
   ans
 }
 
-util.pairwise.wilcoxonSignedRankTest <- function (x, g, p.adjust.method = p.adjust.methods,
-          ...)
+util.pairwise.wilcoxonSignedRankTest <- function (x, g, p.adjust.method = p.adjust.methods, 
+          ...) 
 {
   p.adjust.method <- match.arg(p.adjust.method)
   DNAME <- paste(deparse(substitute(x)), "and", deparse(substitute(g)))
   g <- factor(g)
   METHOD <- "Wilcoxon signed rank test"
-
+  test <- "123"
   compare.levels <- function(i, j) {
     xi <- x[as.integer(g) == i]
     xj <- x[as.integer(g) == j]
     util.wilcoxonSignedRankTest(xi, xj)$p.value
   }
+  
+  # lazy way to get all the effect size calculations
+  compare.levelsR <- function(i, j) {
+    xi <- x[as.integer(g) == i]
+    xj <- x[as.integer(g) == j]
+    util.wilcoxonSignedRankTest(xi, xj)$parameter[["r"]]
+  }
+  
+  
   PVAL <- pairwise.table(compare.levels, levels(g), p.adjust.method)
-  ans <- list(method = METHOD, data.name = DNAME, p.value = PVAL,
-              p.adjust.method = p.adjust.method)
+  RVAL <- pairwise.table(compare.levelsR, levels(g), "none")
+  ans <- list(method = METHOD, data.name = DNAME, p.value = PVAL, r = RVAL,
+              p.adjust.method = p.adjust.method, test = test)
   class(ans) <- "pairwise.htest"
   ans
 }
