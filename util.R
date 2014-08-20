@@ -31,6 +31,27 @@ util.anovaBriefPrint <- function (briefResults) {
   }
 }
 
+# get p-value, possibly adjusted for sphericity violation
+util.pvalueSphericity <- function (anova_results) {
+  p <- anova_results$ANOVA$p
+
+  # determine the p value
+  mauchly <- anova_results$`Mauchly's Test for Sphericity`
+  sphericity <- anova_results$`Sphericity Corrections`
+
+  # check for sphericity violation
+  if (!is.null(mauchly) && mauchly$p<.05) {
+
+    # check if we use Greenhouse-Geisser (epsilon < .75) or Huynh-Feldt correction
+    if (sphericity$GGe < 0.75) {
+      p <- sphericity$`p[GG]`
+    } else {
+      p <- sphericity$`p[HF]`
+    }
+  }
+
+  p
+}
 
 util.anovaToString <- function (anova_results) {
   numDecimals <- 2
@@ -45,7 +66,7 @@ util.anovaToString <- function (anova_results) {
   sphericity <- anova_results$`Sphericity Corrections`
 
   # check for sphericity violation
-  if (mauchly$p<.05) {
+  if (!is.null(mauchly) && mauchly$p<.05) {
     output <- paste0("Mauchly's test showed assumption of sphericity was violated: W(",
                      anova_results$ANOVA$DFn, ") = ", round(mauchly$W, numDecimals), ", ",
                      util.pToString(mauchly$p), "\n")
@@ -119,16 +140,16 @@ util.descriptiveStats <- function (data, ignoreFirstColumn = FALSE) {
   if (ignoreFirstColumn) { # typically the Participants column
     data <- data[2:length(data)]
   }
-  
+
   util.printHeader("Descriptive Statistics")
-  descriptive <- list(modes=apply(data, 2, util.mode), 
+  descriptive <- list(modes=apply(data, 2, util.mode),
                       summary=summary(data))
-  
+
   writeLines("Modes")
   print(descriptive$modes)
   writeLines("")
   print(descriptive$summary)
-  
+
   descriptive
 }
 
@@ -157,25 +178,25 @@ util.withinSubjectsNonParametricAnalysis <- function (data, columns, participant
     writeLines("\nOnly 2 levels, using Wilcoxon test.\n")
     x<-subset_data[[levels(stacked_data$condition)[1]]]
     y<-subset_data[[levels(stacked_data$condition)[2]]]
-    
+
     wilcoxon_results <- util.wilcoxonSignedRankTest(x,y)
     print(wilcoxon_results)
-    
+
     # Pretty print
-    writeLines(paste0("W = ", wilcoxon_results$statistic[[1]], ", Z = ", round(wilcoxon_results$statistic[[2]], 4), ", ", 
+    writeLines(paste0("W = ", wilcoxon_results$statistic[[1]], ", Z = ", round(wilcoxon_results$statistic[[2]], 4), ", ",
                       util.pToString(wilcoxon_results$p.value), ", r = ", round(wilcoxon_results$parameter[[2]], 4)))
-    
+
     if (wilcoxon_results$p.value > 0.05) {
       writeLines("==> Wilcoxon test not significant.")
     } else {
       writeLines("Wilcoxon test significant.")
     }
-    
+
     return(list(brief=results_summary, data=subset_data, stacked_data=stacked_data, descriptive=descriptive, wilcoxon=wilcoxon_results))
   }
-  
+
   writeLines("\nMore than 2 levels, using Friedman test.\n");
-  
+
   # non-parametric anova equivalent: Friedman test
   util.printHeader("Friedman Rank Sum Test Results")
   # sample formula: rating ~ condition | participant
@@ -208,34 +229,34 @@ util.withinSubjectsNonParametricAnalysis <- function (data, columns, participant
 # Provides effect size (r) and the W and Z statistics.
 util.wilcoxonSignedRankTest <- function (x, y) {
   DNAME <- paste(deparse(substitute(x)), "and", deparse(substitute(y)))
-  
-  # get the W statistic using wilcox.test. exact = F since we expect 
-  # ties (two participants in same set with same value) and 
+
+  # get the W statistic using wilcox.test. exact = F since we expect
+  # ties (two participants in same set with same value) and
   # zeroes (one participant in x and y having the same value in both sets)
   W <- as.numeric(wilcox.test(x, y, paired = T, exact = F)$statistic)
   names(W) <- "W"
-  
+
   # compute exact p value and get Z value using wilcoxsign_test from coin package
   results <- wilcoxsign_test(x ~ y, distribution="exact", zero.method="Pratt")
   p <- pvalue(results)
-  
+
   Z <- as.numeric(statistic(results))
   names(Z) <- "Z"
-  
+
   N <- 2*length(x)
   names(N) <- "N"
-  
+
   r <- Z/sqrt(N) # effect size: 0.1 small, 0.3 medium, 0.5 large
   names(r) <- "r"
-  
+
   # use htest to make it pretty
   ans <- list(statistic=c(W, Z), parameter=c(N, r), p.value=p, method="Wilcoxon Signed Rank Test with effect size (r)", data.name=DNAME)
   class(ans) <- "htest"
   ans
 }
 
-util.pairwise.wilcoxonSignedRankTest <- function (x, g, p.adjust.method = p.adjust.methods, 
-          ...) 
+util.pairwise.wilcoxonSignedRankTest <- function (x, g, p.adjust.method = p.adjust.methods,
+                                                  ...)
 {
   p.adjust.method <- match.arg(p.adjust.method)
   DNAME <- paste(deparse(substitute(x)), "and", deparse(substitute(g)))
@@ -247,15 +268,15 @@ util.pairwise.wilcoxonSignedRankTest <- function (x, g, p.adjust.method = p.adju
     xj <- x[as.integer(g) == j]
     util.wilcoxonSignedRankTest(xi, xj)$p.value
   }
-  
+
   # lazy way to get all the effect size calculations
   compare.levelsR <- function(i, j) {
     xi <- x[as.integer(g) == i]
     xj <- x[as.integer(g) == j]
     util.wilcoxonSignedRankTest(xi, xj)$parameter[["r"]]
   }
-  
-  
+
+
   PVAL <- pairwise.table(compare.levels, levels(g), p.adjust.method)
   RVAL <- pairwise.table(compare.levelsR, levels(g), "none")
   ans <- list(method = METHOD, data.name = DNAME, p.value = PVAL, r = RVAL,
@@ -324,18 +345,18 @@ util.posthocAnalysis <- function (data, dvName="value", ivName="condition", numT
   aggr_data <- aggregate(as.formula(paste0(dvName, "~", participantName, "*", ivName)), data=data, FUN=sum)
   results$title <- paste(dvName, "vs", ivName);
   results$t.test <- pairwise.t.test(aggr_data[[dvName]], aggr_data[[ivName]], p.adjust.method="bonferroni", paired=paired)
-  
+
   results$numTrials <- numTrials
-  
+
   dvivFormula <- as.formula(paste0(dvName, "~", ivName))
   results$descriptive <- aggregate(dvivFormula, data=aggr_data, FUN=function (x) { round(mean(x), numDecimals) })
   results$descriptive[,3] <- aggregate(dvivFormula, data=aggr_data, FUN=function (x) { round(sd(x), numDecimals) })[,2]
-  colnames(results$descriptive) <- c(ivName, "mean", "sd") 
+  colnames(results$descriptive) <- c(ivName, "mean", "sd")
   if (!is.null(numTrials)) {
     results$descriptive[,4] <- aggregate(dvivFormula, data=aggr_data, FUN=function (x) { paste0(round(100*mean(x)/numTrials, numDecimals), "%") })[,2]
     results$descriptive[,5] <- aggregate(dvivFormula, data=aggr_data, FUN=function (x) { paste0(round(100*sd(x)/numTrials, numDecimals), "%") })[,2]
     colnames(results$descriptive) <- c(ivName, "mean", "sd", "mean%", "sd%")
-  } 
+  }
   results
 }
 
@@ -344,64 +365,40 @@ util.withinSubjectsMultifactorAnalysis <- function (stacked_data, dvName = "valu
   saved_scipen = getOption("scipen")
   saved_digits = getOption("digits")
   options(scipen=100,digits=4)
-  
+
   util.printBigHeader("Running Within-Subjects Multifactor Analysis");
   if (is.null(ivLabels)) {
     ivLabels <- ivs
   }
   ivNames <- paste0(".(", paste(ivs, collapse=","), ")")
-  
+
   options(contrasts=c("contr.sum", "contr.poly"))
   #anova_results <- ezANOVA(data=stacked_data, dv=.(dvName), wid=.(participantName), within=.(ivs))
   anova_results <- eval(parse(text=paste0("ezANOVA(data=stacked_data, dv=", dvName, ", wid=", participantName, ", within=", ivNames, ")")))
-  
-  
-  # plot significant interaction effects
-  interactions <- anova_results$ANOVA[grepl(":",anova_results$ANOVA[["Effect"]]),]
-  sig_interactions <- interactions[interactions$p<.05,]
-  
-  if (nrow(sig_interactions) > 0) {
-    apply(sig_interactions, 1, function (interaction) {
-      interactionIVs <- strsplit(interaction[["Effect"]], ":")[[1]]
-      if (length(interactionIVs) > 2) {
-        # TODO this should probably handle the case whenthere are >2 IVs in the interaction
-        warning(paste("More than 2 IVs in the interaction effect. Probably not plotting what you want.", interaction[["Effect"]]))
-      }
-      
-      f <- as.formula(paste0("value ~ ",paste0(c(participantName, interactionIVs), collapse="*")))
-      aggr_data <- aggregate(f, data=stacked_data, FUN=sum)
-      
-      # plot both ways in case one is more helpful than another
-      interaction.plot(aggr_data[[interactionIVs[1]]], aggr_data[[interactionIVs[2]]], aggr_data[[dvName]],
-                       xlab=ivLabels[[interactionIVs[1]]], ylab=dvLabel, trace.label=ivLabels[[interactionIVs[2]]])
-      interaction.plot(aggr_data[[interactionIVs[2]]], aggr_data[[interactionIVs[1]]], aggr_data[[dvName]],
-                       xlab=ivLabels[[interactionIVs[2]]], ylab=dvLabel, trace.label=ivLabels[[interactionIVs[1]]])
-    })  
-  }
-  
-  
+
+
   # for each significant main effect, run t-tests
   posthoc <- lapply(1:length(ivs), function (i) {
     iv <- ivs[[i]]
     if (is.null(numTrials)) {
       nt <- NULL
     } else {
-      nt <- numTrials[[i]]  
+      nt <- numTrials[[i]]
     }
-    
+
     # get the row and run the analysis if significant
     ivResults <- anova_results$ANOVA[which(anova_results$ANOVA$Effect == iv),]
     if (ivResults$p<.05) {
       f <- as.formula(paste0("value ~ ",paste0(c(participantName, iv), collapse="*")))
       aggr_data <- aggregate(f, data=stacked_data, FUN=sum)
-     
+
       boxplot(as.formula(paste0("value ~ ", iv)), data=aggr_data, xlab=ivLabels[[iv]], ylab=dvLabel)
-      
+
       return(util.posthocAnalysis(stacked_data, ivName=iv, numTrials=nt, paired=T))
-    } 
-    
+    }
+
     # Not significant:
-    
+
     # lazy way to run this to get the descriptive stats.
     results <- util.posthocAnalysis(stacked_data, ivName=iv, numTrials=nt, paired=T)
     results$t.test <- FALSE
@@ -410,30 +407,93 @@ util.withinSubjectsMultifactorAnalysis <- function (stacked_data, dvName = "valu
   #   print();
   #   print(util.posthocAnalysis(stacked_data, ivName="dSpeed", numTrials=144, paired=T));
   #   print(util.posthocAnalysis(stacked_data, ivName="dLocation", numTrials=216, paired=T));
-  #   
+  #
 
   print(anova_results);
   print(posthoc);
-  
+
+  # analyze significant interaction effects
+  interactions <- anova_results$ANOVA[grepl(":",anova_results$ANOVA[["Effect"]]),]
+  sig_interactions <- interactions[interactions$p<.05,]
+
+  if (nrow(sig_interactions) > 0) {
+    apply(sig_interactions, 1, function (interaction) {
+      interactionIVs <- strsplit(interaction[["Effect"]], ":")[[1]]
+      if (length(interactionIVs) > 2) {
+        # TODO this should probably handle the case whenthere are >2 IVs in the interaction
+        warning(paste("More than 2 IVs in the interaction effect. Not supported.", interaction[["Effect"]]))
+      } else {
+        f <- as.formula(paste0("value ~ ",paste0(c(participantName, interactionIVs), collapse="*")))
+        aggr_data <- aggregate(f, data=stacked_data, FUN=sum)
+        #print(f)
+        #print(aggr_data)
+        # plot both ways in case one is more helpful than another
+        interaction.plot(aggr_data[[interactionIVs[1]]], aggr_data[[interactionIVs[2]]], aggr_data[[dvName]],
+                         xlab=ivLabels[[interactionIVs[1]]], ylab=dvLabel, trace.label=ivLabels[[interactionIVs[2]]])
+        interaction.plot(aggr_data[[interactionIVs[2]]], aggr_data[[interactionIVs[1]]], aggr_data[[dvName]],
+                         xlab=ivLabels[[interactionIVs[2]]], ylab=dvLabel, trace.label=ivLabels[[interactionIVs[1]]])
+
+        writeLines("-------------------------------------\n");
+        writeLines("Analyzing interaction effect");
+        writeLines(deparse(f));
+        writeLines("\n");
+
+        # run post-hoc comparisons holding variables constant
+        for (i in 1:2) { #currently only support 2 IVs
+          # hold one value constant and test for significance against others
+          ivHeld <- interactionIVs[i] # hold this IV constant
+          iv <- interactionIVs[i %% 2 + 1]
+
+          ivHeldLevels <- levels(aggr_data[[ivHeld]])
+
+          # store results
+          N <- length(ivHeldLevels)
+          results_df <- data.frame(ivHeld=rep("", N), iv=rep("", N), p=rep(NA, N), sig=rep("", N), stringsAsFactors=FALSE)
+
+          pAdjustment <- N # bonferroni adjustment (divide alpha by number of tests == multiply p-value by num)
+
+          for (j in 1:N) {
+            ivHeldValue <- ivHeldLevels[j]
+            ivHeldData <- aggr_data[aggr_data[[ivHeld]] == ivHeldValue,]
+            #ezANOVA(data=ivHeldData, dv=value, wid=participant, within=iv)
+            results <- eval(parse(text=paste0("ezANOVA(data=ivHeldData, dv=", dvName, ", wid=", participantName, ", within=", iv, ")")))
+            p <- round(util.pvalueSphericity(results) * pAdjustment, 8)
+            sig <- ""
+            if (p < 0.05) {
+              sig <- "*"
+            }
+            results_df[j, ] <- c(ivHeldValue, iv, p, sig)
+          }
+
+          colnames(results_df) <- c(ivHeld, iv, "p", "p<.05");
+          print(results_df);
+          writeLines("\n");
+        }
+      }
+    })
+  }
+
+
+
   # revert options for scientific notation
   options(scipen=saved_scipen,digits=saved_digits)
   rm(saved_scipen,saved_digits)
-  
+
   return(list(anova=anova_results, posthoc=posthoc))
 }
 
 util.barPlot <- function(data, x="condition", y="value", fill="type", xlabel=NULL, ylabel=NULL, legend_label=NULL, title=NULL, grouped=F) {
   # spacing between bars determined by difference from 1 of bar width
   barWidth <- .75
-  
+
   barPosition <- "stack" #default
   if (grouped) {
     # space between groups determined by difference from 1 of bar width + bar spacing
     barSpacing <-.08
-    
+
     barPosition <- position_dodge(barWidth + barSpacing)
   }
-  
+
   if (nlevels(data[[fill]]) <= 2) {
     scaleColours <- c("#88CD7F", "#2c7fb8")
   } else if (nlevels(data[[fill]]) <= 4) {
@@ -441,62 +501,62 @@ util.barPlot <- function(data, x="condition", y="value", fill="type", xlabel=NUL
   } else {
     scaleColours <- c("#f0f9e8", "#bae4bc", "#7bccc4", "#43a2ca", "#0868ac")
   }
-  
-  
-  the_plot <- ggplot(data, aes_string(x=x, y=y, fill=fill)) + 
+
+
+  the_plot <- ggplot(data, aes_string(x=x, y=y, fill=fill)) +
     # draw the bars with the legend and no outline to prevent diagonal line on legend colours
-    geom_bar(position=barPosition, 
+    geom_bar(position=barPosition,
              stat="identity",
              width=barWidth) +
-    
+
     # draw the bars with outline and no legend (draws over the bars with no outline)
-    geom_bar(position=barPosition, 
-             stat="identity", 
+    geom_bar(position=barPosition,
+             stat="identity",
              width=barWidth,
              colour=alpha("black", .5),
              show_guide=F) +
-    
+
     # add in error bars based on confidence interval (ci)
     geom_errorbar(aes(ymin=value-ci, ymax=value+ci),
                   size=.3,    # Thinner lines
                   width=.2,
                   position=barPosition) +
-    
+
     # add in axis labels and title
     xlab(xlabel) +
     ylab(ylabel) +
     ggtitle(title) +
-    
-    # legend 
-    scale_fill_manual(name=legend_label, values=scaleColours) + 
-    
+
+    # legend
+    scale_fill_manual(name=legend_label, values=scaleColours) +
+
     # y-axis. expand=c(0,0) prevents padding at bottom, limit=c(0,1) ensures top stays at 100%
     scale_y_continuous(labels = percent_format(), breaks=seq(0,1,.2), expand=c(0,0), limit=c(0,1)) +
-    
+
     theme_bw() +
     theme(axis.title.y=element_text(vjust=1),  # adjust axis and title spacing
-          axis.title.x=element_text(vjust=-.5), 
+          axis.title.x=element_text(vjust=-.5),
           plot.title=element_text(vjust=1, face="bold"),
           # hide vertical grid lines
           panel.grid.major.x=element_blank(),
           # add a nice outline around the legend colours
           legend.key = element_rect(colour=alpha("black", .75)))
-  
+
   the_plot
 }
 
 util.frequencyBarPlot <- function(data, x="condition", y="value", fill="type", xlabel=NULL, ylabel=NULL, legend_label=NULL, title=NULL, grouped=F, ylimit=NULL) {
   # spacing between bars determined by difference from 1 of bar width
   barWidth <- .75
-  
+
   barPosition <- "stack" #default
   if (grouped) {
     # space between groups determined by difference from 1 of bar width + bar spacing
     barSpacing <-.08
-    
+
     barPosition <- position_dodge(barWidth + barSpacing)
   }
-  
+
   if (nlevels(data[[fill]]) <= 2) {
     scaleColours <- c("#88CD7F", "#2c7fb8")
   } else if (nlevels(data[[fill]]) <= 4) {
@@ -505,42 +565,42 @@ util.frequencyBarPlot <- function(data, x="condition", y="value", fill="type", x
     scaleColours <- c("#f0f9e8", "#bae4bc", "#7bccc4", "#43a2ca", "#0868ac") # http://colorbrewer2.org
     scaleColours <- c("#FED9D9", "#FC9191",  "#7bccc4", "#43a2ca", "#0868ac") # red at bottom 2
   }
-  
-  the_plot <- ggplot(data, aes_string(x=x, y=y, fill=fill)) + 
+
+  the_plot <- ggplot(data, aes_string(x=x, y=y, fill=fill)) +
     # draw the bars with the legend and no outline to prevent diagonal line on legend colours
-    geom_bar(position="dodge", 
+    geom_bar(position="dodge",
              stat="identity",
              width=barWidth) +
-    
+
     # draw the bars with outline and no legend (draws over the bars with no outline)
-    geom_bar(position="dodge", 
-             stat="identity", 
+    geom_bar(position="dodge",
+             stat="identity",
              width=barWidth,
              colour=alpha("black", .5),
              show_guide=F) +
-        
+
     # add in axis labels and title
     xlab(xlabel) +
     ylab(ylabel) +
     ggtitle(title) +
-    
-    # legend 
-    scale_fill_manual(name=legend_label, values=scaleColours) + 
-    
+
+    # legend
+    scale_fill_manual(name=legend_label, values=scaleColours) +
+
     # y-axis. expand=c(0,0) prevents padding at bottom, limit=c(0,1) ensures top stays at 100%
-#     scale_y_discrete(expand=c(0,0)) +
-  scale_y_continuous(labels = percent_format(), breaks=seq(0,1,.2), expand=c(0,0), limit=ylimit) +
-  
-    
+    #     scale_y_discrete(expand=c(0,0)) +
+    scale_y_continuous(labels = percent_format(), breaks=seq(0,1,.2), expand=c(0,0), limit=ylimit) +
+
+
     theme_bw() +
     theme(axis.title.y=element_text(vjust=1),  # adjust axis and title spacing
-          axis.title.x=element_text(vjust=-.5), 
+          axis.title.x=element_text(vjust=-.5),
           plot.title=element_text(vjust=1, face="bold"),
           # hide vertical grid lines
           panel.grid.major.x=element_blank(),
           # add a nice outline around the legend colours
           legend.key = element_rect(colour=alpha("black", .75)))
-  
+
   the_plot
 }
 
@@ -559,13 +619,13 @@ util.frequencyBarPlot <- function(data, x="condition", y="value", fill="type", x
 summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
                       conf.interval=.95, .drop=TRUE) {
   require(plyr)
-  
+
   # New version of length which can handle NA's: if na.rm==T, don't count them
   length2 <- function (x, na.rm=FALSE) {
     if (na.rm) sum(!is.na(x))
     else       length(x)
   }
-  
+
   # This does the summary. For each group's data frame, return a vector with
   # N, mean, and sd
   datac <- ddply(data, groupvars, .drop=.drop,
@@ -577,18 +637,18 @@ summarySE <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
                  },
                  measurevar
   )
-  
-  # Rename the "mean" column    
+
+  # Rename the "mean" column
   datac <- rename(datac, c("mean" = measurevar))
-  
+
   datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
-  
+
   # Confidence interval multiplier for standard error
-  # Calculate t-statistic for confidence interval: 
+  # Calculate t-statistic for confidence interval:
   # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
   ciMult <- qt(conf.interval/2 + .5, datac$N-1)
   datac$ci <- datac$se * ciMult
-  
+
   return(datac)
 }
 
